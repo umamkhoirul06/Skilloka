@@ -1,0 +1,228 @@
+# =============================================================================
+# Skilloka - Docker Compose Development Configuration
+# Complete local development environment
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Nginx Reverse Proxy
+  # ---------------------------------------------------------------------------
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/nginx/Dockerfile
+    container_name: skilloka-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./backend:/var/www/html:cached
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./docker/nginx/snippets:/etc/nginx/snippets:ro
+      - ./docker/ssl:/etc/nginx/ssl:ro
+      - nginx-logs:/var/log/nginx
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - skilloka-network
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # PHP-FPM Backend
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+      target: development
+    container_name: skilloka-backend
+    volumes:
+      - ./backend:/var/www/html:cached
+      - ./docker/backend/conf.d/php-dev.ini:/usr/local/etc/php/conf.d/99-custom.ini:ro
+      - php-logs:/var/log/php
+    environment:
+      - APP_ENV=local
+      - APP_DEBUG=true
+      - PHP_IDE_CONFIG=serverName=skilloka
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - skilloka-network
+    healthcheck:
+      test: ["CMD-SHELL", "php-fpm -t || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: skilloka-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-skilloka}
+      POSTGRES_USER: ${DB_USERNAME:-skilloka}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - skilloka-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-skilloka} -d ${DB_DATABASE:-skilloka}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis Cache & Queue
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: skilloka-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - skilloka-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Queue Worker (Laravel Horizon alternative for dev)
+  # ---------------------------------------------------------------------------
+  queue-worker:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+      target: development
+    container_name: skilloka-queue-worker
+    command: php artisan queue:work --sleep=3 --tries=3 --max-jobs=1000 --timeout=60
+    volumes:
+      - ./backend:/var/www/html:cached
+    environment:
+      - APP_ENV=local
+      - QUEUE_CONNECTION=redis
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - skilloka-network
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Scheduler (Cron)
+  # ---------------------------------------------------------------------------
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+      target: development
+    container_name: skilloka-scheduler
+    command: >
+      sh -c "while true; do
+               php artisan schedule:run --verbose --no-interaction;
+               sleep 60;
+             done"
+    volumes:
+      - ./backend:/var/www/html:cached
+    environment:
+      - APP_ENV=local
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - skilloka-network
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible storage)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: skilloka-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-skilloka}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-secretkey}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - skilloka-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Mailpit (Email testing)
+  # ---------------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: skilloka-mailpit
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks:
+      - skilloka-network
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MeiliSearch (Full-text search)
+  # ---------------------------------------------------------------------------
+  meilisearch:
+    image: getmeili/meilisearch:v1.5
+    container_name: skilloka-meilisearch
+    ports:
+      - "7700:7700"
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_KEY:-masterkey}
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meilisearch-data:/meili_data
+    networks:
+      - skilloka-network
+    restart: unless-stopped
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  skilloka-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  meilisearch-data:
+  nginx-logs:
+  php-logs:
