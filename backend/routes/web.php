@@ -2,6 +2,9 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Admin\AdminAuthController;
+use App\Http\Controllers\Admin\CourseController;
+use App\Http\Controllers\Admin\StudentController;
+use App\Http\Controllers\Admin\BookingController;
 
 Route::get('/', function () {
     return redirect()->route('admin.login');
@@ -16,10 +19,20 @@ Route::post('/admin/logout', [AdminAuthController::class, 'logout'])->name('admi
 Route::middleware(['auth:web'])->prefix('admin')->name('admin.')->group(function () {
     Route::get('/dashboard', [AdminAuthController::class, 'dashboard'])->name('dashboard');
 
-    // Placeholder for LPK Profile
+    // LPK Profile
     Route::get('/profile', function () {
-        return view('admin.profile'); // We will create this
+        return view('admin.profile');
     })->name('lpk.profile');
+
+    // Courses Management
+    Route::resource('courses', CourseController::class);
+
+    // Students Management
+    Route::resource('students', StudentController::class);
+
+    // Bookings Management
+    Route::resource('bookings', BookingController::class)->except(['edit', 'update']);
+    Route::patch('/bookings/{booking}/status', [BookingController::class, 'updateStatus'])->name('bookings.status');
 });
 
 // Super Admin Routes (God View)
